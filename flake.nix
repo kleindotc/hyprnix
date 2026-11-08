@@ -1,25 +1,17 @@
 {
-  description = "HyprNix";
+  description = "HyprNix - A declarative NixOS module to configure Hyprland, including Hypr tools, display managers and advanced customization options.";
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs-unstable";
-    qylock = {
-      url = "github:Darkkal44/qylock";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
   outputs =
-    {
-      self,
-      qylock,
-      ...
-    }:
+    { self, ... }@inputs:
     {
       nixosModules = {
         default = self.nixosModules.hyprnix;
-        hyprnix = import ./module.nix {
-          inherit qylock;
-        };
+        hyprnix = import ./module.nix { };
       };
+
+      formatter = builtins.mapAttrs (_: pkgs: pkgs.nixfmt) inputs.nixpkgs.legacyPackages;
     };
 }

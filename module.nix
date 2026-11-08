@@ -2,14 +2,11 @@
   pkgs,
   config,
   lib,
-  qylock,
   ...
 }:
 let
   cfg = config.hyprnix;
   tomlSettingsFormat = pkgs.formats.toml { };
-  hasUnstable = pkgs ? unstable;
-  fpkgs = if cfg.unstable then pkgs.unstable else pkgs;
 
   stateHome =
     let
@@ -41,7 +38,7 @@ let
         defaultText = lib.literalExpression "false";
         description = "Enable ${tool}.";
       };
-      package = lib.mkPackageOption fpkgs tool {
+      package = lib.mkPackageOption pkgs tool {
         extraDescription = "The ${tool} package to use.";
       };
     }
@@ -123,7 +120,7 @@ let
     name = dmName;
     value = {
       enable = lib.mkEnableOption "Enable the ${dmName} Display Manager.";
-      package = lib.mkPackageOption fpkgs (
+      package = lib.mkPackageOption pkgs (
         (lib.optional (dmName == "sddm") "kdePackages") ++ [ dmName ]
       ) { };
     }
@@ -134,20 +131,17 @@ let
           default = null;
           defaultText = lib.literalExpression "null";
           description = ''
-            The sddm theme to use.
+            The sddm theme to use. This applies at
+            `services.displayManager.sddm.theme`.
 
-            This applies at `services.displayManager.sddm.theme`.
+            If you use `qylock`, leave this option empty.
           '';
         };
         packages = lib.mkOption {
           type = lib.types.listOf lib.types.package;
           default = [ ];
           defaultText = lib.literalExpression "[ ]";
-          description = ''
-            A list of sddm theme packages to install them in your environment.
-
-            If you use qylock, leave this option and `theme.name` empty.
-          '';
+          description = "A list of sddm theme packages to install them in your environment.";
         };
       };
     }
@@ -191,11 +185,11 @@ let
     in
     {
       tty = 1;
-      system_shell = "${fpkgs.bash}/bin/bash";
+      system_shell = "${pkgs.bash}/bin/bash";
       initial_path = "/run/current-system/sw/bin";
       x11 = {
-        xauth_path = "${fpkgs.xauth}/bin/xauth";
-        xserver_path = "${fpkgs.xorg-server}/bin/X";
+        xauth_path = "${pkgs.xauth}/bin/xauth";
+        xserver_path = "${pkgs.xorg-server}/bin/X";
         xsessions_path = "${desktops}/share/xsessions";
         xsetup_path = config.services.displayManager.sessionData.wrapper;
       };
@@ -225,7 +219,7 @@ let
 
   enabledDMs = lib.filter (m: cfg.dm.${m}.enable or false) dmList;
 
-  hyprlandEntry = "hyprland.lua";
+  hyprlandEntry = cfg.hyprland.config.entry;
   hyprlandPathSet = cfg.hyprland.config.path != null;
   hyprlandRawSet = cfg.hyprland.config.raw != null && cfg.hyprland.config.raw != "";
   hyprlandConfigSet = hyprlandPathSet || hyprlandRawSet;
@@ -233,25 +227,24 @@ let
   hyprlandConfigStore =
     let
       conf = cfg.hyprland.config;
-      entry = "hyprland.lua";
     in
     if conf.path != null then
       pkgs.runCommand "hyprland-config" { } ''
         mkdir -p $out
         cp -a ${lib.escapeShellArg (toString conf.path)}/. $out/
         # Checks if entry `hyprland.lua` exists.
-        if [ ! -f "$out/${entry}" ]; then
-          echo "error: hyprnix.hyprland.config.path does not contain '${entry}'" >&2
+        if [ ! -f "$out/${hyprlandEntry}" ]; then
+          echo "error: hyprnix.hyprland.config.path does not contain '${hyprlandEntry}'" >&2
           exit 1
         fi
       ''
     else if conf.raw != null && conf.raw != "" then
-      pkgs.writeTextDir entry conf.raw
+      pkgs.writeTextDir hyprlandEntry conf.raw
     else
       null;
   hyprlandExtraArgs = lib.optionals (hyprlandConfigStore != null) [
     "--config"
-    "${hyprlandConfigStore}/hyprland.lua"
+    "${hyprlandConfigStore}/${hyprlandEntry}"
   ];
 
   hyprnixSessionName = if cfg.uwsm.enable then "hyprnix-uwsm" else "hyprnix";
@@ -272,8 +265,6 @@ let
 in
 {
   imports = [
-    qylock.nixosModules.default
-    (lib.mkAliasOptionModule [ "hyprnix" "qylock" ] [ "programs" "qylock" ])
     (lib.mkRemovedOptionModule [ "hyprnix" "portal" "enable" ]
       "`programs.hyprland` always enables xdg-desktop-portal-hyprland; only `hyprnix.portal.package` can be configured."
     )
@@ -282,20 +273,11 @@ in
   options.hyprnix = {
     enable = lib.mkEnableOption "HyprNix - Declarative configuration manager for Hyprland.";
 
-    unstable = lib.mkEnableOption "Enable nixpkgs.unstable." // {
-      default = false;
-      defaultText = lib.literalExpression "false";
-      description = ''
-        When enabled, HyprNix will use pkgs.unstable for its packages.
-        Requires that your system provides pkgs.unstable (via an overlay).
-      '';
-    };
-
     hyprland = {
       enable = lib.mkEnableOption "Hyprland (through `programs.hyprland`)." // {
         default = cfg.enable;
       };
-      package = lib.mkPackageOption fpkgs "hyprland" { };
+      package = lib.mkPackageOption pkgs "hyprland" { };
       plugins = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [ ];
@@ -304,6 +286,20 @@ in
         example = lib.literalExpression "[ pkgs.hyprlandPlugins.hyprbars pkgs.hyprlandPlugins.hyprfocus ]";
       };
       config = {
+        entry = lib.mkOption {
+          type = lib.types.str;
+          default = "hyprland.lua";
+          defaultText = lib.literalExpression "hyprland.lua";
+          description = ''
+            If for some reason you want rename the entry file
+            of your hyprland configuration.
+
+            "hyprland.lua" by default, but you can named whatever
+            you want.
+
+            e.g: load, manager, yourmom, ...
+          '';
+        };
         path = lib.mkOption {
           type = lib.types.nullOr lib.types.path;
           default = null;
@@ -353,16 +349,16 @@ in
       enable = lib.mkEnableOption "launching Hyprland with the Universal Wayland Session Manager." // {
         default = cfg.enable;
       };
-      package = lib.mkPackageOption fpkgs "uwsm" { };
+      package = lib.mkPackageOption pkgs "uwsm" { };
     };
     portal = {
-      package = lib.mkPackageOption fpkgs "xdg-desktop-portal-hyprland" { };
+      package = lib.mkPackageOption pkgs "xdg-desktop-portal-hyprland" { };
     };
     xwayland = {
       enable = lib.mkEnableOption "XWayland" // {
         default = cfg.enable;
       };
-      package = lib.mkPackageOption fpkgs "xwayland" { };
+      package = lib.mkPackageOption pkgs "xwayland" { };
     };
     dm = lib.listToAttrs (lib.map dmOptions dmList);
     tools = lib.listToAttrs (lib.map toolOptions hyprTools);
@@ -385,22 +381,6 @@ in
       {
         assertions = [
           {
-            assertion = !cfg.unstable || hasUnstable;
-            message = ''
-              hyprnix.unstable = true, but pkgs.unstable is not available.
-
-              Add an overlay in your main flake, for example:
-
-                nixpkgs.overlays = [
-                  (_: prev: {
-                    unstable = import inputs.nixpkgs-unstable {
-                      inherit (prev) system config;
-                    };
-                  })
-                ];
-            '';
-          }
-          {
             assertion = (lib.length enabledDMs) <= 1;
             message = ''
               hyprnix.dm: only one display manager may be enabled at a time.
@@ -416,9 +396,11 @@ in
           }
           {
             assertion =
-              !(cfg.qylock.enable or false) || !(cfg.dm.sddm.enable or false) || (cfg.dm.sddm.theme.name == null);
+              !(config.programs.qylock.enable or false)
+              || !(cfg.dm.sddm.enable or false)
+              || (cfg.dm.sddm.theme.name == null);
             message = ''
-              hyprnix: qylock and SDDM cannot be enabled at the same time.
+              hyprnix: qylock and SDDM theme cannot be enabled at the same time.
               Disable hyprnix.dm.sddm.theme.name (or set it to null) or disable qylock / SDDM.
             '';
           }
