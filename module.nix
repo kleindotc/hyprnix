@@ -14,11 +14,16 @@ let
     "hyprpaper"
     "hyprsunset"
     "hyprlauncher"
+    "hyprtoolkit"
     "hyprpolkitagent"
+    "hyprland-qt-support"
+    "hyprqt6engine"
   ];
 
   hyprTools = hyprToolsWithConfig ++ [
+    "hyprshot"
     "hyprpicker"
+    "hyprcursor"
     "hyprsysteminfo"
     "hyprshutdown"
     "hyprpwcenter"
