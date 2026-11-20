@@ -154,16 +154,6 @@ let
           };
         }
         // lib.optionalAttrs (name == "sddm") {
-          sessionLog = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            defaultText = lib.literalExpression "null";
-            description = ''
-              Define the output path for sddm wayland session log.
-              Does nothing by default.
-            '';
-            example = "tpm/sddm/wayland-session.log";
-          };
           theme = lib.mkOption {
             type = lib.types.submodule {
               options = {
@@ -663,9 +653,6 @@ in
           package = cfg.dm.sddm.package;
           theme = lib.mkIf (cfg.dm.sddm.theme.name != null) cfg.dm.sddm.theme.name;
           wayland.enable = lib.mkDefault true;
-          settings = lib.optionalAttrs (cfg.dm.sddm.sessionLog != null) {
-            Wayland.SessionLogFile = cfg.dm.sddm.sessionLog;
-          };
         };
       })
       (lib.mkIf cfg.dm.ly.enable {
