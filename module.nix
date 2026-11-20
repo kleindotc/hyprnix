@@ -8,12 +8,6 @@ let
   cfg = config.hyprnix;
   tomlSettingsFormat = pkgs.formats.toml { };
 
-  stateHome =
-    let
-      xdg = builtins.getEnv "XDG_STATE_HOME";
-    in
-    if xdg != "" then xdg else "${builtins.getEnv "HOME"}/.cache/state";
-
   hyprToolsWithConfig = [
     "hyprlock"
     "hypridle"
@@ -30,238 +24,460 @@ let
     "hyprpwcenter"
   ];
 
-  toolOptions = tool: {
-    name = tool;
-    value = {
-      enable = lib.mkEnableOption "${tool}." // {
-        default = false;
-        defaultText = lib.literalExpression "false";
-        description = "Enable ${tool}.";
-      };
-      package = lib.mkPackageOption pkgs tool {
-        extraDescription = "The ${tool} package to use.";
-      };
-    }
-    // lib.optionalAttrs (lib.elem tool hyprToolsWithConfig) {
-      config = {
-        raw = lib.mkOption {
-          type = lib.types.nullOr lib.types.lines;
-          default = null;
-          defaultText = lib.literalExpression "null";
-          description = ''
-            Inline / multi-line configuration that is written into the
-            configuration file when no file is defined in `.config.file`.
-          '';
-          example = lib.literalExpression ''
-            # https://wiki.hypr.land/hypr-ecosystem/user/hypridle/
-            listener {
-                timeout = 500                            # in seconds.
-                on-timeout = notify-send "You are idle!" # command to run when timeout has passed.
-                on-resume = notify-send "Welcome back!"  # command to run when activity is detected after timeout has fired.
-            }
-          '';
-        };
-        file = lib.mkOption {
-          type = lib.types.nullOr lib.types.path;
-          default = null;
-          defaultText = lib.literalExpression "null";
-          description = ''
-            Path to a configuration file. When set, takes precedence over
-            `.config.raw`.
-          '';
-          example = lib.literalExpression "./path/to/config.conf";
-        };
-      };
-    };
-  };
+  dmList = [
+    "sddm"
+    "ly"
+    "lemurs"
+  ];
 
-  mkConfigStorePath =
-    name: toolCfg:
-    if toolCfg.config.file != null then
-      pkgs.runCommand "${name}-config" { } ''
-        cp ${toolCfg.config.file} $out
-      ''
-    else if toolCfg.config.raw != null && toolCfg.config.raw != "" then
-      pkgs.writeText "${name}.conf" toolCfg.config.raw
+  configSourceAssertions =
+    {
+      prefix,
+      file,
+      raw,
+      settings ? null,
+      settingsSet ? (settings != null),
+      ...
+    }:
+    [
+      {
+        assertion =
+          lib.count (x: x) [
+            (file != null)
+            (raw != null)
+            settingsSet
+          ] <= 1;
+        message = ''
+          ${prefix}:
+          configuration sources are mutually exclusive.
+          Choose at most one of: file, raw, settings.
+        '';
+      }
+      {
+        assertion = file == null || lib.filesystem.pathIsRegularFile file;
+        message = ''
+          ${prefix}.file must point to an existing regular file.
+        '';
+      }
+    ];
+
+  hasConfigSource =
+    {
+      file,
+      raw,
+      settings ? null,
+      settingsSet ? (settings != null),
+      ...
+    }:
+    file != null || raw != null || settingsSet;
+
+  mkConfigSource =
+    {
+      name,
+      file ? null,
+      raw ? null,
+      settings ? null,
+      settingsSet ? (settings != null),
+      ...
+    }:
+    if file != null then
+      builtins.path {
+        path = file;
+        inherit name;
+      }
+    else if raw != null then
+      pkgs.writeText name raw
+    else if settingsSet then
+      tomlSettingsFormat.generate name settings
     else
       null;
 
+  mkEnableFollowingMain =
+    description:
+    lib.mkEnableOption description
+    // {
+      default = cfg.enable;
+      defaultText = lib.literalExpression "hyprnix.enable";
+    };
+
+  mkToolOption =
+    name:
+    lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "${name}." // {
+            default = false;
+            defaultText = lib.literalExpression "false";
+          };
+          package = lib.mkPackageOption pkgs name {
+            extraDescription = "The ${name} package to use.";
+          };
+        }
+        // lib.optionalAttrs (lib.elem name hyprToolsWithConfig) {
+          config = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                raw = lib.mkOption {
+                  type = lib.types.nullOr lib.types.lines;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Inline Configuration content.";
+                };
+                file = lib.mkOption {
+                  type = lib.types.nullOr lib.types.path;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Path to an existing configuration file.";
+                };
+              };
+            };
+            default = { };
+            description = "Configuration for ${name}.";
+          };
+        };
+      };
+      default = { };
+      description = "Options for ${name}.";
+    };
+
+  mkDmOption =
+    name:
+    lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption name // {
+            default = false;
+            defaultText = lib.literalExpression "false";
+          };
+          package = lib.mkPackageOption pkgs (lib.optional (name == "sddm") "kdePackages" ++ [ name ]) {
+            extraDescription = "The ${name} package to use.";
+          };
+        }
+        // lib.optionalAttrs (name == "sddm") {
+          sessionLog = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            defaultText = lib.literalExpression "null";
+            description = ''
+              Define the output path for sddm wayland session log.
+              Does nothing by default.
+            '';
+            example = "tpm/sddm/wayland-session.log";
+          };
+          theme = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                name = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = ''
+                    sddm theme to use.
+
+                    This applies at `services.displayManager.sddm.theme`.
+                    If you use `qylock`, leave this option empty.
+                  '';
+                };
+                packages = lib.mkOption {
+                  type = lib.types.listOf lib.types.package;
+                  default = [ ];
+                  defaultText = lib.literalExpression "[ ]";
+                  description = "A list of sddm packages to install them in your environment.";
+                };
+              };
+            };
+            default = { };
+            defaultText = lib.literalExpression "{ }";
+            description = "Theme Configuration for ${name}.";
+          };
+        }
+        // lib.optionalAttrs (name == "lemurs") {
+          config = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                file = lib.mkOption {
+                  type = lib.types.nullOr lib.types.path;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Path to a single lemurs TOML file.";
+                  example = lib.literalExpression "./lemurs.toml";
+                };
+                raw = lib.mkOption {
+                  type = lib.types.nullOr lib.types.lines;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Inline TOML configuration for lemurs.";
+                  example = ''
+                    # ...
+                    [background]
+                    show_background = false
+                  '';
+                };
+                settings = lib.mkOption {
+                  inherit (tomlSettingsFormat) type;
+                  default = { };
+                  defaultText = lib.literalExpression "{ }";
+                  description = ''
+                    Configuration for lemurs, provided as a Nix
+                    attribute set and automatically serialized to TOML.
+
+                    see [lemurs configuration docs](https://github.com/coastalwhite/lemurs/blob/main/extra/config.toml) for available options.
+                  '';
+                };
+              };
+            };
+            default = { };
+            defaultText = lib.literalExpression "{ }";
+            description = "";
+          };
+          variables = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                file = lib.mkOption {
+                  type = lib.types.nullOr lib.types.path;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Path to a lemurs variables TOML configuration.";
+                };
+                raw = lib.mkOption {
+                  type = lib.types.nullOr lib.types.lines;
+                  default = null;
+                  defaultText = lib.literalExpression "null";
+                  description = "Inline lemurs variables TOML configuration.";
+                };
+                settings = lib.mkOption {
+                  inherit (tomlSettingsFormat) type;
+                  default = { };
+                  defaultText = lib.literalExpression "{ }";
+                  description = "Variables configuration for lemurs, serialized automatically to TOML.";
+                };
+              };
+            };
+            default = { };
+            defaultText = lib.literalExpression "{ }";
+            description = "Variables configuration for lemurs.";
+          };
+        };
+      };
+    };
+
+  tools = lib.genAttrs hyprTools (name: cfg.tools.${name});
+  toolsWithConfig = lib.genAttrs hyprToolsWithConfig (name: cfg.tools.${name});
+  enabledTools = lib.filterAttrs (_: tool: tool.enable) tools;
+
+  toolConfigAssertions = lib.concatLists (
+    lib.mapAttrsToList (
+      name: tool:
+      lib.optionals tool.enable (configSourceAssertions {
+        prefix = "hyprnix.tools.${name}.config";
+        inherit (tool.config) file raw;
+      })
+    ) toolsWithConfig
+  );
+
+  toolConfigSources = lib.filterAttrs (_: source: source != null) (
+    lib.mapAttrs (
+      name: tool:
+      mkConfigSource {
+        name = "${name}.conf";
+        inherit (tool.config) file raw;
+      }
+    ) (lib.filterAttrs (_: tool: tool.enable) toolsWithConfig)
+  );
+
+  hyprnixTools =
+    if toolConfigSources == { } then
+      null
+    else
+      pkgs.runCommand "hyprnix-tools" { } ''
+        mkdir -p "$out"
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (
+            name: source: "install -m 0444 ${source} \"$out/${name}.conf\""
+          ) toolConfigSources
+        )}
+      '';
+
   mkWrappedPackage =
-    name: pkg: configPath:
-    if configPath == null then
+    name: tool:
+    let
+      pkg = tool.package;
+      exe = pkg.meta.mainProgram or name;
+    in
+    if !(toolConfigSources ? ${name}) then
       pkg
     else
       pkgs.symlinkJoin {
         name = "${name}-with-config";
         paths = [ pkg ];
         nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta = pkg.meta or { };
         postBuild = ''
-          wrapProgram $out/bin/${name} \
-            --add-flags "-c ${configPath}"
+          set -eu
+          if [ ! -x "$out/bin/${exe}" ]; then
+            echo "error; expected executable ${exe} was not found in ${pkg}" >&2
+            exit 1
+          fi
+
+          wrapProgram "$out/bin/${exe}" \
+            --add-flags ${lib.escapeShellArg "-c ${hyprnixTools}/${name}.conf"}
         '';
       };
 
-  finalToolPackages = lib.mapAttrs (
-    name: toolCfg:
-    let
-      basePkg = toolCfg.package;
-      configPath = if lib.elem name hyprToolsWithConfig then mkConfigStorePath name toolCfg else null;
-      shouldWrap = configPath != null && lib.elem name hyprToolsWithConfig;
-    in
-    if shouldWrap then mkWrappedPackage name basePkg configPath else basePkg
-  ) cfg.tools;
+  enabledToolPackages = lib.mapAttrsToList mkWrappedPackage enabledTools;
+  enabledPluginPackages = lib.optionals (
+    cfg.hyprland.plugins.enable && cfg.hyprland.plugins.packages != null
+  ) cfg.hyprland.plugins.packages;
 
-  dmList = [
-    "sddm"
-    "ly"
-    "lemurs"
-  ];
-  dmOptions = dmName: {
-    name = dmName;
-    value = {
-      enable = lib.mkEnableOption "Enable the ${dmName} Display Manager.";
-      package = lib.mkPackageOption pkgs (
-        (lib.optional (dmName == "sddm") "kdePackages") ++ [ dmName ]
-      ) { };
-    }
-    // lib.optionalAttrs (dmName == "sddm") {
-      theme = {
-        name = lib.mkOption {
-          type = lib.types.nullOr lib.types.str;
-          default = null;
-          defaultText = lib.literalExpression "null";
-          description = ''
-            The sddm theme to use. This applies at
-            `services.displayManager.sddm.theme`.
+  enabledDMs = lib.filter (m: cfg.dm.${m}.enable) dmList;
 
-            If you use `qylock`, leave this option empty.
-          '';
-        };
-        packages = lib.mkOption {
-          type = lib.types.listOf lib.types.package;
-          default = [ ];
-          defaultText = lib.literalExpression "[ ]";
-          description = "A list of sddm theme packages to install them in your environment.";
-        };
-      };
-    }
-    // lib.optionalAttrs (dmName == "lemurs") {
-      config = {
-        path = lib.mkOption {
-          type = lib.types.nullOr lib.types.path;
-          default = null;
-          defaultText = lib.literalExpression "null";
-          description = "Path to a single lemurs TOML file (not a directory).";
-          example = lib.literalExpression "./lemurs.toml";
-        };
-        raw = lib.mkOption {
-          type = lib.types.nullOr lib.types.lines;
-          default = null;
-          defaultText = lib.literalExpression "null";
-          description = "Inline TOML configuration for lemurs.";
-          example = ''
-            # General settings for background style
-            [background]
-            show_background = false
-          '';
-        };
-        settings = lib.mkOption {
-          inherit (tomlSettingsFormat) type;
-          default = { };
-          defaultText = lib.literalExpression "{ }";
-          description = ''
-            Configuration for lemurs, provided as a Nix attribute set and automatically
-            serialized to TOML.
-            See [lemurs configuration documentation](https://github.com/coastalwhite/lemurs/blob/main/extra/config.toml) for available options.
-          '';
-        };
-      };
-    };
+  lemurs = cfg.dm.lemurs;
+  lemursConfig = lemurs.config;
+  lemursVariables = lemurs.variables;
+
+  mkLemursSource = name: source: {
+    inherit name;
+    inherit (source) file raw settings;
+    settingsSet = source.settings != { };
   };
 
-  lemursDefaults =
-    let
-      desktops = config.services.displayManager.sessionData.desktops;
-    in
-    {
-      tty = 1;
-      system_shell = "${pkgs.bash}/bin/bash";
-      initial_path = "/run/current-system/sw/bin";
-      x11 = {
-        xauth_path = "${pkgs.xauth}/bin/xauth";
-        xserver_path = "${pkgs.xorg-server}/bin/X";
-        xsessions_path = "${desktops}/share/xsessions";
-        xsetup_path = config.services.displayManager.sessionData.wrapper;
-      };
-      wayland.wayland_sessions_path = "${desktops}/share/wayland-sessions";
-    };
+  lemursConfigSource = mkLemursSource "lemurs-config.toml" lemursConfig;
+  lemursVariablesSource = mkLemursSource "lemurs-variables.toml" lemursVariables;
 
-  lemursSettings = lib.recursiveUpdate (lib.recursiveUpdate lemursDefaults config.services.displayManager.lemurs.settings) cfg.dm.lemurs.config.settings;
+  lemursConfigStore = mkConfigSource lemursConfigSource;
+  lemursVariablesStore = mkConfigSource lemursVariablesSource;
 
-  lemursRawSet = cfg.dm.lemurs.config.raw != null && cfg.dm.lemurs.config.raw != "";
-  lemursPathSet = cfg.dm.lemurs.config.path != null;
-  lemursUserConfigSet = lemursRawSet || lemursPathSet;
+  lemursCustomConfig = hasConfigSource lemursConfigSource || hasConfigSource lemursVariablesSource;
 
-  lemursPathOk =
-    lemursPathSet
-    && builtins.pathExists cfg.dm.lemurs.config.path
-    && lib.filesystem.pathIsRegularFile cfg.dm.lemurs.config.path;
+  lemursCommandArgs = [
+    (lib.getExe lemurs.package)
+  ]
+  ++ lib.optionals (lemursConfigStore != null) [
+    "--config"
+    (toString lemursConfigStore)
+  ]
+  ++ lib.optionals (lemursVariablesStore != null) [
+    "--variables"
+    (toString lemursVariablesStore)
+  ];
 
-  lemursConfigStore =
-    if lemursPathSet then
-      pkgs.runCommand "lemurs-config.toml" { } ''
-        cp ${lib.escapeShellArg (toString cfg.dm.lemurs.config.path)} $out
-      ''
-    else if lemursRawSet then
-      pkgs.writeText "lemurs-config.toml" cfg.dm.lemurs.config.raw
-    else
-      tomlSettingsFormat.generate "lemurs-config.toml" lemursSettings;
+  lemursExecCmd = lib.escapeShellArgs ([ "exec" ] ++ lemursCommandArgs);
 
-  enabledDMs = lib.filter (m: cfg.dm.${m}.enable or false) dmList;
+  lemursAssertions =
+    configSourceAssertions ({ prefix = "hyprnix.dm.lemurs.config"; } // lemursConfigSource)
+    ++ configSourceAssertions ({ prefix = "hyprnix.dm.lemurs.variables"; } // lemursVariablesSource)
+    ++ [
+      {
+        assertion = !lemursConfigSource.settingsSet || ((lemursConfig.settings.tty or 1) == 1);
+        message = ''
+          hyprnix.dm.lemurs: `tty` must be 1 because
+          the NixOS display-manager service is fixed to VT1.
+        '';
+      }
+    ];
 
-  hyprlandEntry = cfg.hyprland.config.entry;
-  hyprlandPathSet = cfg.hyprland.config.path != null;
-  hyprlandRawSet = cfg.hyprland.config.raw != null && cfg.hyprland.config.raw != "";
+  hyprlandConfig = cfg.hyprland.config;
+  hyprlandEntry = hyprlandConfig.entry;
+  hyprlandPathSet = hyprlandConfig.path != null;
+  hyprlandRawSet = hyprlandConfig.raw != null && hyprlandConfig.raw != "";
   hyprlandConfigSet = hyprlandPathSet || hyprlandRawSet;
 
   hyprlandConfigStore =
-    let
-      conf = cfg.hyprland.config;
-    in
-    if conf.path != null then
+    if hyprlandPathSet then
       pkgs.runCommand "hyprland-config" { } ''
-        mkdir -p $out
-        cp -a ${lib.escapeShellArg (toString conf.path)}/. $out/
-        # Checks if entry `hyprland.lua` exists.
-        if [ ! -f "$out/${hyprlandEntry}" ]; then
-          echo "error: hyprnix.hyprland.config.path does not contain '${hyprlandEntry}'" >&2
+        mkdir -p "$out"
+        cp -a ${lib.escapeShellArg "${hyprlandConfig.path}"}/. "$out/"
+        # Checks if entry `hyprland.lua` exists
+        if [ ! -f "$out"/${lib.escapeShellArg hyprlandEntry} ]; then
+          echo "error: invalid hyprland entry" >&2
           exit 1
         fi
       ''
-    else if conf.raw != null && conf.raw != "" then
-      pkgs.writeTextDir hyprlandEntry conf.raw
+    else if hyprlandRawSet then
+      pkgs.writeTextDir hyprlandEntry hyprlandConfig.raw
     else
       null;
+
   hyprlandExtraArgs = lib.optionals (hyprlandConfigStore != null) [
     "--config"
     "${hyprlandConfigStore}/${hyprlandEntry}"
   ];
 
+  hyprnixSessionLauncher = pkgs.writeShellScript "hyprnix-session-launcher" ''
+    exec ${
+      lib.escapeShellArgs (
+        [
+          (lib.getExe' cfg.hyprland.package "start-hyprland")
+        ]
+        ++ [ "--" ]
+        ++ hyprlandExtraArgs
+      )
+    }
+  '';
+
   hyprnixSessionName = if cfg.uwsm.enable then "hyprnix-uwsm" else "hyprnix";
 
   hyprnixPlainSession = pkgs.writeTextFile {
     name = "hyprnix-session";
-    destination = "/share/wayland-session/hyprnix.desktop";
+    destination = "/share/wayland-sessions/hyprnix.desktop";
     text = ''
       [Desktop Entry]
       Name=HyprNix
       Comment=Hyprland launched with the HyprNix configuration
-      Exec=${lib.getExe' config.programs.hyprland.package "start-hyprland"} -- ${lib.escapeShellArg hyprlandExtraArgs}
+      Exec=${hyprnixSessionLauncher}
       Type=Application
       DesktopNames=Hyprland
     '';
     derivationArgs.passthru.providedSessions = [ "hyprnix" ];
   };
+
+  hyprnixPackages =
+    enabledPluginPackages
+    ++ enabledToolPackages
+    ++ (if cfg.dm.sddm.enable then cfg.dm.sddm.theme.packages else [ ])
+    ++ cfg.extraPackages;
+
+  moduleAssertions = [
+    {
+      assertion = !hyprlandPathSet || lib.filesystem.pathIsDirectory hyprlandConfig.path;
+      message = ''
+        hyprnix.hyprland.config.path must point to a directory.
+      '';
+    }
+    {
+      assertion = !(hyprlandPathSet && hyprlandRawSet);
+      message = "hyprnix.hyprland.config: `path` and `raw` are mutually exclusive.";
+    }
+    {
+      assertion = (lib.length enabledDMs) <= 1;
+      message = ''
+        hyprnix.dm: only one display manager may be enabled at a time.
+        Currently enabled: ${lib.concatStringsSep ", " enabledDMs}
+      '';
+    }
+    {
+      assertion =
+        !(config.programs.qylock.enable or false)
+        || !cfg.dm.sddm.enable
+        || (cfg.dm.sddm.theme.name == null);
+      message = ''
+        hyprnix: qylock and SDDM theme cannot be enabled at the same time.
+        Disable hyprnix.dm.sddm.theme.name (or set it to null) or disable qylock / SDDM.
+      '';
+    }
+  ]
+  ++ toolConfigAssertions
+  ++ lemursAssertions;
+
+  moduleWarnings =
+    lib.optional (!lemurs.enable && lemursCustomConfig) ''
+      hyprnix.dm.lemurs configuration is set but the Lemurs display manager
+      is disabled. The configuration will be ignored.
+    ''
+    ++ lib.optional (!cfg.hyprland.enable && hyprlandConfigSet) ''
+      hyprnix.hyprland configuration is set but Hyprland is disabled.
+      The configuration will be ignored.
+    '';
 in
 {
   imports = [
@@ -274,20 +490,37 @@ in
     enable = lib.mkEnableOption "HyprNix - Declarative configuration manager for Hyprland.";
 
     hyprland = {
-      enable = lib.mkEnableOption "Hyprland (through `programs.hyprland`)." // {
-        default = cfg.enable;
-      };
+      enable = mkEnableFollowingMain "Hyprland (through `programs.hyprland`).";
       package = lib.mkPackageOption pkgs "hyprland" { };
       plugins = lib.mkOption {
-        type = lib.types.listOf lib.types.package;
-        default = [ ];
-        defaultText = lib.literalExpression "[ ]";
-        description = "List of Hyprland plugins (pkgs.hyprlandPlugins.*)";
-        example = lib.literalExpression "[ pkgs.hyprlandPlugins.hyprbars pkgs.hyprlandPlugins.hyprfocus ]";
+        type = lib.types.submodule {
+          options = {
+            enable = lib.mkEnableOption "Enable Hyprland Plugins.";
+            packages = lib.mkOption {
+              type = lib.types.nullOr (lib.types.listOf lib.types.package);
+              default = null;
+              defaultText = lib.literalExpression "null";
+              description = "List of Hyprland plugins (pkgs.hyprlandPluings.*)";
+              example = lib.literalExpression "[ pkgs.hyprlandPackages.hyprbars ... ]";
+            };
+          };
+        };
+        default = { };
+        defaultText = lib.literalExpression "{ }";
+        description = "Hyprland plugins";
       };
       config = {
         entry = lib.mkOption {
-          type = lib.types.str;
+          type = lib.types.addCheck lib.types.str (
+            e:
+            e != ""
+            && !(lib.hasPrefix "/" e)
+            && !(lib.elem ".." (lib.splitString "/" e))
+            && !(lib.hasInfix "\\" e)
+            && !(lib.hasInfix "\n" e)
+            && !(lib.hasInfix "\r" e)
+            && !(lib.hasInfix "\t" e)
+          );
           default = "hyprland.lua";
           defaultText = lib.literalExpression "hyprland.lua";
           description = ''
@@ -322,7 +555,7 @@ in
             #   ./another-config.lua
             #   ./scripts/...
             #   ./configs/...
-            hyprnix.core.hyprland.config.path = ./my-hyprland-config;
+            hyprnix.hyprland.config.path = ./my-hyprland-config;
           '';
         };
         raw = lib.mkOption {
@@ -346,22 +579,32 @@ in
       };
     };
     uwsm = {
-      enable = lib.mkEnableOption "launching Hyprland with the Universal Wayland Session Manager." // {
-        default = cfg.enable;
-      };
+      enable = mkEnableFollowingMain "launching Hyprland with the Universal Wayland Session Manager.";
       package = lib.mkPackageOption pkgs "uwsm" { };
     };
     portal = {
       package = lib.mkPackageOption pkgs "xdg-desktop-portal-hyprland" { };
     };
     xwayland = {
-      enable = lib.mkEnableOption "XWayland" // {
-        default = cfg.enable;
-      };
+      enable = mkEnableFollowingMain "XWayland";
       package = lib.mkPackageOption pkgs "xwayland" { };
     };
-    dm = lib.listToAttrs (lib.map dmOptions dmList);
-    tools = lib.listToAttrs (lib.map toolOptions hyprTools);
+    dm = lib.mkOption {
+      type = lib.types.submodule { options = lib.genAttrs dmList mkDmOption; };
+      default = lib.genAttrs dmList (_: { });
+      defaultText = lib.literalExpression ''
+        lib.genAttrs dmList (_: { })
+      '';
+      description = "Display Manager options.";
+    };
+    tools = lib.mkOption {
+      type = lib.types.submodule { options = lib.genAttrs hyprTools mkToolOption; };
+      default = lib.genAttrs hyprTools (_: { });
+      defaultText = lib.literalExpression ''
+        lib.genAttrs hyprTools (_: { })
+      '';
+      description = "Hyprland ecosystem tools.";
+    };
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [ ];
@@ -379,84 +622,9 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        assertions = [
-          {
-            assertion = (lib.length enabledDMs) <= 1;
-            message = ''
-              hyprnix.dm: only one display manager may be enabled at a time.
-              Currently enabled: ${lib.concatStringsSep ", " enabledDMs}
-            '';
-          }
-          {
-            assertion =
-              !(cfg.dm.sddm.enable or false)
-              || builtins.getEnv "XDG_STATE_HOME" != ""
-              || builtins.getEnv "HOME" != "";
-            message = "SDDM: at least one of `XDG_STATE_HOME` or `HOME` must be set.";
-          }
-          {
-            assertion =
-              !(config.programs.qylock.enable or false)
-              || !(cfg.dm.sddm.enable or false)
-              || (cfg.dm.sddm.theme.name == null);
-            message = ''
-              hyprnix: qylock and SDDM theme cannot be enabled at the same time.
-              Disable hyprnix.dm.sddm.theme.name (or set it to null) or disable qylock / SDDM.
-            '';
-          }
-        ]
-        ++ (lib.concatLists (
-          lib.mapAttrsToList (name: toolCfg: [
-            {
-              assertion =
-                !(lib.elem name hyprToolsWithConfig)
-                || (toolCfg.config.raw == null || toolCfg.config.raw == "")
-                || toolCfg.config.file == null;
-              message = "cfg.hyprnix.tools.${name}: 'raw' and 'file' are mutually exclusive.";
-            }
-          ]) (lib.attrsets.filterAttrs (name: _: lib.elem name hyprToolsWithConfig) cfg.tools)
-        ))
-        ++ lib.optionals cfg.hyprland.enable [
-          {
-            assertion = !(hyprlandPathSet && hyprlandRawSet);
-            message = "hyprnix.hyprland.config: `path` and `raw` are mutually exclusive.";
-          }
-          {
-            assertion =
-              !hyprlandPathSet || builtins.pathExists (cfg.hyprland.config.path + "/${hyprlandEntry}");
-            message = ''
-              hyprnix.hyprland.config.path must be a directory containing `${hyprlandEntry}`.
-              With flakes, make sure the files are tracked by git.
-            '';
-          }
-        ]
-        ++ lib.optionals cfg.dm.lemurs.enable [
-          {
-            assertion = !(lemursRawSet && lemursPathSet);
-            message = "hyprnix.dm.lemurs.config: `path` and `raw` are mutually exclusive.";
-          }
-          {
-            assertion = !lemursPathSet || lemursPathOk;
-            message = "hyprnix.dm.lemurs.config.path must point to an existing regular TOML file.";
-          }
-          {
-            assertion = lemursPathSet || lemursRawSet || (lemursSettings.tty or 1) == 1;
-            message = ''
-              hyprnix.dm.lemurs: `tty` must be 1 because the NixOS
-              display-manager service is fixed to VT1.
-            '';
-          }
-        ];
-
-        warnings =
-          lib.optional (!cfg.dm.lemurs.enable && lemursUserConfigSet) ''
-            `hyprnix.dm.lemurs.config.{path,raw}` is set but `hyprnix.dm.lemurs.enable = false;`
-            the configuration is ignored.
-          ''
-          ++ lib.optional (!cfg.hyprland.enable && hyprlandConfigSet) ''
-            `hyprnix.hyprland.config.{path,raw}` is set but `hyprnix.hyprland.enable = false;`
-            the configuration is ignored.
-          '';
+        assertions = moduleAssertions;
+        warnings = moduleWarnings;
+        environment.systemPackages = hyprnixPackages;
       }
       (lib.mkIf cfg.hyprland.enable (
         lib.mkMerge [
@@ -470,16 +638,12 @@ in
             };
             programs.xwayland.package = lib.mkDefault cfg.xwayland.package;
 
-            environment.systemPackages = cfg.hyprland.plugins;
-
             security.rtkit.enable = lib.mkDefault true;
           }
-
-          (lib.mkIf cfg.uwsm.enable { programs.uwsm.package = cfg.uwsm.package; })
-          (lib.mkIf hyprlandConfigSet (
+          (lib.mkIf cfg.uwsm.enable (
             lib.mkMerge [
-              { services.displayManager.defaultSession = lib.mkDefault hyprnixSessionName; }
-              (lib.mkIf cfg.uwsm.enable {
+              { programs.uwsm.package = cfg.uwsm.package; }
+              (lib.mkIf hyprlandConfigSet {
                 programs.uwsm.waylandCompositors.hyprnix = {
                   prettyName = "HyprNix";
                   comment = "Hyprland managed by UWSM, launched with the HyprNix configuration";
@@ -487,6 +651,11 @@ in
                   extraArgs = hyprlandExtraArgs;
                 };
               })
+            ]
+          ))
+          (lib.mkIf hyprlandConfigSet (
+            lib.mkMerge [
+              { services.displayManager.defaultSession = lib.mkDefault hyprnixSessionName; }
               (lib.mkIf (!cfg.uwsm.enable) {
                 services.displayManager.sessionPackages = [ hyprnixPlainSession ];
               })
@@ -503,11 +672,10 @@ in
           package = cfg.dm.sddm.package;
           theme = lib.mkIf (cfg.dm.sddm.theme.name != null) cfg.dm.sddm.theme.name;
           wayland.enable = lib.mkDefault true;
-          settings = {
-            Wayland.SessionLogFile = stateHome + "/sddm/wayland-session.log";
+          settings = lib.optionalAttrs (cfg.dm.sddm.sessionLog != null) {
+            Wayland.SessionLogFile = cfg.dm.sddm.sessionLog;
           };
         };
-        environment.systemPackages = cfg.dm.sddm.theme.packages;
       })
       (lib.mkIf cfg.dm.ly.enable {
         services.displayManager.ly = {
@@ -519,18 +687,10 @@ in
         services.displayManager.lemurs = {
           enable = true;
           package = cfg.dm.lemurs.package;
+          settings = cfg.dm.lemurs.config.settings;
         };
-        services.displayManager.generic.execCmd = lib.mkForce "exec ${lib.getExe cfg.dm.lemurs.package} --config ${lemursConfigStore}";
+        services.displayManager.generic.execCmd = lib.mkIf lemursCustomConfig (lib.mkForce lemursExecCmd);
       })
-      {
-        environment.systemPackages =
-          cfg.extraPackages
-          ++ lib.filter (p: p != null) (
-            lib.mapAttrsToList (
-              name: toolCfg: if toolCfg.enable then finalToolPackages.${name} else null
-            ) cfg.tools
-          );
-      }
     ]
   );
 }
