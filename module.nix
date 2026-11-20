@@ -404,15 +404,7 @@ let
   ];
 
   hyprnixSessionLauncher = pkgs.writeShellScript "hyprnix-session-launcher" ''
-    exec ${
-      lib.escapeShellArgs (
-        [
-          (lib.getExe' cfg.hyprland.package "start-hyprland")
-        ]
-        ++ [ "--" ]
-        ++ hyprlandExtraArgs
-      )
-    }
+    exec /run/current-system/sw/bin/start-hyprland -- ${lib.escapeShellArgs hyprlandExtraArgs}
   '';
 
   hyprnixSessionName = if cfg.uwsm.enable then "hyprnix-uwsm" else "hyprnix";
@@ -647,8 +639,7 @@ in
                 programs.uwsm.waylandCompositors.hyprnix = {
                   prettyName = "HyprNix";
                   comment = "Hyprland managed by UWSM, launched with the HyprNix configuration";
-                  binPath = "/run/current-system/sw/bin/Hyprland";
-                  extraArgs = hyprlandExtraArgs;
+                  binPath = hyprnixSessionLauncher;
                 };
               })
             ]
