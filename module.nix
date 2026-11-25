@@ -115,7 +115,7 @@ let
             defaultText = lib.literalExpression "false";
           };
           package = lib.mkPackageOption pkgs name {
-            extraDescription = "The ${name} package to use.";
+            description = "The ${name} package to use.";
           };
         }
         // lib.optionalAttrs (lib.elem name hyprToolsWithConfig) {
@@ -155,7 +155,7 @@ let
             defaultText = lib.literalExpression "false";
           };
           package = lib.mkPackageOption pkgs (lib.optional (name == "sddm") "kdePackages" ++ [ name ]) {
-            extraDescription = "The ${name} package to use.";
+            description = "The ${name} package to use.";
           };
         }
         // lib.optionalAttrs (name == "sddm") {
@@ -323,7 +323,6 @@ let
   enabledPluginPackages = lib.optionals (
     cfg.hyprland.plugins.enable && cfg.hyprland.plugins.packages != null
   ) cfg.hyprland.plugins.packages;
-
   enabledDMs = lib.filter (m: cfg.dm.${m}.enable) dmList;
 
   lemurs = cfg.dm.lemurs;
@@ -418,8 +417,17 @@ let
     derivationArgs.passthru.providedSessions = [ "hyprnix" ];
   };
 
+  hyprlandPlugins =
+    if enabledPluginPackages != [ ] then
+      pkgs.symlinkJoin {
+        name = "hyprland-plugins";
+        paths = enabledPluginPackages;
+      }
+    else
+      null;
+
   hyprnixPackages =
-    enabledPluginPackages
+    lib.optional (hyprlandPlugins != null) hyprlandPlugins
     ++ enabledToolPackages
     ++ (if cfg.dm.sddm.enable then cfg.dm.sddm.theme.packages else [ ])
     ++ cfg.extraPackages;
@@ -487,8 +495,49 @@ in
               type = lib.types.nullOr (lib.types.listOf lib.types.package);
               default = null;
               defaultText = lib.literalExpression "null";
-              description = "List of Hyprland plugins (pkgs.hyprlandPluings.*)";
-              example = lib.literalExpression "[ pkgs.hyprlandPackages.hyprbars ... ]";
+              description = ''
+                List of Hyprland plugins to install.
+
+                You can mix packages from `pkgs.hyprlandPlugins.*` (nixpkgs)
+                and packages coming from the official flake
+                `github:hyprwm/hyprland-plugins`.
+
+                **Recommended way to use the official plugins flake**
+                (do **not** add `hyprland-plugins` as an input of this module):
+
+                In *your* flake.nix:
+
+                ```
+                inputs = {
+                  # ...
+                  hyprland.url = "github:hyprwm/Hyprland"; # or the one you already use
+                  hyprland-plugins = {
+                    url = "github:hyprwm/hyprland-plugins";
+                    inputs.hyprland.follows = "hyprland";
+                  };
+                };
+                ```
+
+                Then in your configuration:
+
+                ```
+                hyprnix.hyprland.plugins = {
+                  enable = true;
+                  packages = with inputs.hyprland-plugins.packages.''${pkgs.stdenv.hostPlatform.system}; [
+                    hyprbars
+                    hyprexpo
+                    # ...
+                  ];
+                };
+                ```
+
+                The module will create a `symlinkJoin` and set `HYPR_PLUGIN_DIR`
+                automatically.
+              '';
+              example = lib.literalExpression ''
+                [ pkgs.hyprlandPlugins.hyprbars ]
+                # or with the official flake (see description)
+              '';
             };
           };
         };
@@ -627,6 +676,11 @@ in
 
             security.rtkit.enable = lib.mkDefault true;
           }
+          (lib.mkIf (cfg.hyprland.plugins.enable && hyprlandPlugins != null) {
+            environment.sessionVariables = {
+              HYPR_PLUGIN_DIR = "${hyprlandPlugins}";
+            };
+          })
           (lib.mkIf cfg.uwsm.enable (
             lib.mkMerge [
               { programs.uwsm.package = cfg.uwsm.package; }
