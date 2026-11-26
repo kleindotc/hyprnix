@@ -114,9 +114,7 @@ let
             default = false;
             defaultText = lib.literalExpression "false";
           };
-          package = lib.mkPackageOption pkgs name {
-            description = "The ${name} package to use.";
-          };
+          package = lib.mkPackageOption pkgs name { };
         }
         // lib.optionalAttrs (lib.elem name hyprToolsWithConfig) {
           config = lib.mkOption {
@@ -154,9 +152,7 @@ let
             default = false;
             defaultText = lib.literalExpression "false";
           };
-          package = lib.mkPackageOption pkgs (lib.optional (name == "sddm") "kdePackages" ++ [ name ]) {
-            description = "The ${name} package to use.";
-          };
+          package = lib.mkPackageOption pkgs (lib.optional (name == "sddm") "kdePackages" ++ [ name ]) { };
         }
         // lib.optionalAttrs (name == "sddm") {
           theme = lib.mkOption {
